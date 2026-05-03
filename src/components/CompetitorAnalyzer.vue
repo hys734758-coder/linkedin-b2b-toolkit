@@ -1,25 +1,50 @@
 <template>
   <div>
-    <h1 class="page-title">竞品/同行 LinkedIn 分析器</h1>
-    <p class="page-desc">输入竞品或目标公司名称，自动获取公司资料、职位数据、技能画像，全方位分析人才策略与竞争格局。</p>
+    <h1 class="page-title">竞品 / 同行分析器</h1>
+    <p class="page-desc">
+      输入公司名称、LinkedIn 公司主页链接，或 LinkedIn 个人主页链接，
+      自动获取公司资料、职位数据、技能画像，全方位分析人才策略与竞争格局。
+    </p>
 
     <!-- Search -->
     <div class="card">
       <div class="row">
         <div class="grow">
-          <label>公司名称</label>
-          <input type="text" v-model="company" placeholder="例：Stripe, Notion, Vercel"
-            @keyup.enter="analyze" />
+          <label>公司名称 或 LinkedIn 链接</label>
+          <input type="text" v-model="rawInput" placeholder="例：Stripe、https://www.linkedin.com/in/username/"
+            @keyup.enter="analyze" @input="onInputChange" />
+          <div v-if="inputHint" style="margin-top:4px;font-size:12px" :style="`color:${inputHint.color}`">
+            {{ inputHint.text }}
+          </div>
         </div>
         <div style="padding-top:22px">
-          <button class="btn btn-primary" @click="analyze" :disabled="loading">
+          <button class="btn btn-primary" @click="analyze" :disabled="loading || !validInput">
             {{ loading ? '分析中…' : '开始分析' }}
           </button>
         </div>
       </div>
+
+      <!-- API Key Settings -->
+      <div style="margin-top:12px">
+        <div style="cursor:pointer;font-size:12px;color:var(--blue)" @click="showSettings=!showSettings">
+          {{ showSettings ? '收起设置 ▲' : '高级设置（可选）▼' }}
+        </div>
+        <div v-if="showSettings" style="margin-top:8px;padding:10px;background:var(--gray-50);border-radius:8px">
+          <div style="font-size:12px;color:var(--gray-600);margin-bottom:6px">
+            RapidAPI Key（可选）：用于采集 LinkedIn 个人档案数据，
+            <a href="https://rapidapi.com/hanzzok12/api/fresh-linkedin-scraper-api" target="_blank" rel="noopener" style="color:var(--blue)">免费获取（50次/月）</a>
+          </div>
+          <input type="password" v-model="rapidApiKey" placeholder="输入 RapidAPI Key..."
+            style="width:100%;max-width:400px;padding:6px 10px;border:1px solid var(--gray-200);border-radius:6px;font-size:12px" />
+          <div v-if="rapidApiKey" style="margin-top:4px;font-size:11px;color:var(--gray-500)">
+            ✅ Key 已保存至浏览器本地（清除浏览数据后会失效）
+          </div>
+        </div>
+      </div>
+
       <div style="margin-top:10px">
         <span v-for="s in sampleCompanies" :key="s" class="suggest-badge"
-          @click="company=s;analyze()">{{ s }}</span>
+          @click="rawInput=s;onInputChange();analyze()">{{ s }}</span>
       </div>
       <div v-if="apiStatus.length" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:6px">
         <span v-for="s in apiStatus" :key="s.name" class="api-badge"
@@ -30,9 +55,66 @@
     </div>
 
     <template v-if="loaded">
+      <!-- Personal Profile Card (NEW) -->
+      <div class="card" v-if="personalProfile">
+        <div class="card-title">个人档案</div>
+        <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+          <div v-if="personalProfile.profilePicture" style="flex-shrink:0">
+            <img :src="personalProfile.profilePicture" :alt="personalProfile.fullName"
+              style="width:80px;height:80px;border-radius:12px;object-fit:cover;border:1px solid var(--gray-200)"
+              @error="$event.target.style.display='none'" />
+          </div>
+          <div style="flex:1;min-width:200px">
+            <div style="font-size:18px;font-weight:600;color:var(--gray-900)">{{ personalProfile.fullName }}</div>
+            <div style="margin-top:4px;font-size:13px;color:var(--gray-600)">{{ personalProfile.headline }}</div>
+            <div style="margin-top:4px;font-size:12px;color:var(--gray-500)">{{ personalProfile.location }}</div>
+            <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px">
+              <a v-if="personalProfile.publicProfileUrl" :href="personalProfile.publicProfileUrl"
+                target="_blank" rel="noopener" class="ext-link ext-link-blue">
+                🔗 LinkedIn 主页
+              </a>
+              <span v-if="personalProfile.followers" class="ext-link">👥 {{ personalProfile.followers }} 关注者</span>
+            </div>
+            <div v-if="personalProfile.summary" style="margin-top:10px;font-size:13px;color:var(--gray-600);line-height:1.6;white-space:pre-wrap">{{ personalProfile.summary }}</div>
+          </div>
+        </div>
+
+        <!-- Experience -->
+        <div v-if="personalProfile.experiences && personalProfile.experiences.length" style="margin-top:16px">
+          <div class="section-label" style="color:#1e40af">工作经历</div>
+          <div v-for="exp in personalProfile.experiences.slice(0,5)" :key="exp.company || exp.title"
+            style="padding:6px 0;border-bottom:0.5px solid var(--gray-100);font-size:13px">
+            <div style="font-weight:500;color:var(--gray-800)">{{ exp.title }}</div>
+            <div style="color:var(--gray-600)">{{ exp.company }} · {{ exp.duration }}</div>
+            <div v-if="exp.description" style="margin-top:2px;font-size:12px;color:var(--gray-500)">{{ exp.description.slice(0,120) }}</div>
+          </div>
+        </div>
+
+        <!-- Skills -->
+        <div v-if="personalProfile.skills && personalProfile.skills.length" style="margin-top:12px">
+          <div class="section-label" style="color:#92400e">技能标签</div>
+          <div class="tag-list">
+            <span v-for="s in personalProfile.skills.slice(0,20)" :key="s.name || s"
+              class="kw-chip kw-med" style="cursor:pointer" @click="copyWord(s.name || s)">
+              {{ s.name || s }} <span v-if="s.endorsements" style="color:var(--gray-400);font-size:10px">×{{ s.endorsements }}</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- Auto-detected company -->
+        <div v-if="detectedCompany" style="margin-top:14px;padding:10px;background:#eff6ff;border-radius:8px;border:1px solid #bfdbfe">
+          <div style="font-size:12px;color:#1e40af;margin-bottom:6px">📌 从档案中识别到当前/最近公司：</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="font-size:14px;font-weight:500;color:#1e40af">{{ detectedCompany }}</div>
+            <button class="btn btn-primary" style="padding:4px 12px;font-size:12px"
+              @click="analyzeCompany(detectedCompany)">分析该公司</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Company Profile Card -->
       <div class="card" v-if="companyProfile">
-        <div class="card-title">公司概览</div>
+        <div class="card-title">公司概览 {{ personalProfile ? '（关联公司）' : '' }}</div>
         <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
           <div v-if="companyProfile.logo" style="flex-shrink:0">
             <img :src="companyProfile.logo" :alt="companyProfile.name"
@@ -176,7 +258,7 @@
         <p style="font-size:12px;color:var(--gray-600);margin-bottom:12px">基于名称相似度推荐，点击可切换分析</p>
         <div style="display:flex;flex-wrap:wrap;gap:8px">
           <div v-for="c in suggestedCompanies" :key="c.domain" class="company-chip"
-            @click="company=c.name;analyze()" :title="'域名: '+c.domain">
+            @click="rawInput=c.name;onInputChange();analyze()" :title="'域名: '+c.domain">
             <img v-if="c.logo" :src="c.logo" style="width:20px;height:20px;border-radius:4px" @error="$event.target.style.display='none'" />
             <span>{{ c.name }}</span>
           </div>
@@ -237,10 +319,10 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 
 // ─── State ───
-const company = ref('')
+const rawInput = ref('')
 const loading = ref(false)
 const loaded = ref(false)
 const matchedJobs = ref([])
@@ -248,8 +330,75 @@ const companyProfile = ref(null)
 const suggestedCompanies = ref([])
 const apiStatus = ref([])
 const jobSearch = ref('')
+const personalProfile = ref(null)
+const detectedCompany = ref('')
+const showSettings = ref(false)
+const rapidApiKey = ref('')
+const inputHint = ref(null)
+const validInput = computed(() => {
+  const v = rawInput.value.trim()
+  return v.length > 0 && inputHint.value?.type !== 'invalid'
+})
 
 const sampleCompanies = ['Stripe', 'Notion', 'Vercel', 'Shopify', 'GitLab', 'Deel', 'Webflow', 'OpenAI']
+
+// ─── Load / Save RapidAPI Key ───
+onMounted(() => {
+  const saved = localStorage.getItem('lk_rapidapi_key')
+  if (saved) rapidApiKey.value = saved
+})
+watch(rapidApiKey, (v) => {
+  if (v) localStorage.setItem('lk_rapidapi_key', v)
+  else localStorage.removeItem('lk_rapidapi_key', v)
+})
+
+// ─── Input change detection ───
+function onInputChange() {
+  const v = rawInput.value.trim()
+  if (!v) {
+    inputHint.value = null
+    return
+  }
+  // Detect LinkedIn URL
+  if (/linkedin\.com/i.test(v)) {
+    if (/\/in\//i.test(v)) {
+      inputHint.value = { type: 'personal', color: '#1e40af', text: '👤 已识别 LinkedIn 个人主页链接，将采集个人档案数据' }
+    } else if (/\/company\//i.test(v)) {
+      inputHint.value = { type: 'company-url', color: '#059669', text: '🏢 已识别 LinkedIn 公司主页链接，将提取公司名称' }
+    } else {
+      inputHint.value = { type: 'linkedin-other', color: '#d97706', text: '⚠️ 无法识别 LinkedIn URL 格式，将作为公司名称搜索' }
+    }
+  } else {
+    inputHint.value = { type: 'company', color: '#059669', text: '🏢 将以公司名称进行搜索' }
+  }
+}
+
+// ─── URL Parsing ───
+function parseLinkedInURL(url) {
+  try {
+    // Decode URL-encoded characters (Chinese, etc.)
+    const decoded = decodeURIComponent(url)
+    const parsed = new URL(decoded)
+    if (!parsed.hostname.includes('linkedin.com')) return null
+
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    // linkedin.com/in/username
+    if (parts[0] === 'in' && parts[1]) {
+      const slug = parts[1]
+      // Build a display name: keep Chinese chars, clean trailing IDs
+      const nameParts = slug.split('-').filter(p => !/^\d+$/.test(p) && p.length > 0)
+      const displayName = nameParts.join(' ')
+      return { type: 'personal', slug, displayName }
+    }
+    // linkedin.com/company/company-name
+    if (parts[0] === 'company' && parts[1]) {
+      // Convert company-name to display name
+      const name = parts[1].replace(/-/g, ' ')
+      return { type: 'company', name }
+    }
+  } catch {}
+  return null
+}
 
 // ─── Tech keyword database (expanded) ───
 const TECH_KEYWORDS = new Set([
@@ -261,7 +410,7 @@ const TECH_KEYWORDS = new Set([
   'machine learning','data engineering','data science','devops','sre',
   'saas','api','microservices','serverless','blockchain','ai/ml','deep learning',
   '.net','unity','unreal','laravel','symfony','svelte','solidity',
-  'react native','data analysis','automation','rust','ruby/rails',
+  'react native','data analysis','automation',
   'gcp','data engineering','shopify','video','salesforce','hubspot',
   'snowflake','databricks','bigquery','redshift','neo4j','cassandra',
   'jenkins','github actions','argocd','ansible','puppet','chef',
@@ -272,41 +421,35 @@ const TECH_KEYWORDS = new Set([
 // ─── API Endpoints ───
 const CLEARBIT_SUGGEST = 'https://autocomplete.clearbit.com/v1/companies/suggest'
 const REMOTIVE_API = 'https://remotive.com/api/remote-jobs'
+const RAPIDAPI_HOST = 'fresh-linkedin-scraper-api.p.rapidapi.com'
+const RAPIDAPI_ENDPOINT = `https://${RAPIDAPI_HOST}/api/v1/user/profile`
 
 // ─── Main Analysis ───
 async function analyze() {
-  if (!company.value.trim() || loading.value) return
+  const v = rawInput.value.trim()
+  if (!v || loading.value) return
   loading.value = true
   loaded.value = false
   matchedJobs.value = []
   companyProfile.value = null
   suggestedCompanies.value = []
+  personalProfile.value = null
+  detectedCompany.value = ''
   apiStatus.value = []
 
-  const q = company.value.trim()
-
   try {
-    // Fire all requests in parallel
-    const [clearbitResult, remotiveResult] = await Promise.allSettled([
-      fetchCompanyProfile(q),
-      fetchJobsFromRemotive(q),
-    ])
+    const linkedinURL = parseLinkedInURL(v)
 
-    // Process Clearbit
-    if (clearbitResult.status === 'fulfilled' && clearbitResult.value) {
-      companyProfile.value = clearbitResult.value.profile
-      suggestedCompanies.value = clearbitResult.value.suggestions
-      apiStatus.value.push({ name: 'Clearbit 公司信息', ok: true })
+    if (linkedinURL && linkedinURL.type === 'personal') {
+      // Personal LinkedIn URL → fetch profile, then analyze their company
+      await analyzePersonalURL(linkedinURL)
     } else {
-      apiStatus.value.push({ name: 'Clearbit 公司信息', ok: false })
-    }
+      // Company name or company LinkedIn URL
+      const companyName = linkedinURL
+        ? linkedinURL.name
+        : v
 
-    // Process Remotive
-    if (remotiveResult.status === 'fulfilled') {
-      matchedJobs.value = remotiveResult.value
-      apiStatus.value.push({ name: 'Remotive 远程职位', ok: true })
-    } else {
-      apiStatus.value.push({ name: 'Remotive 远程职位', ok: false })
+      await analyzeCompany(companyName)
     }
 
     loaded.value = true
@@ -318,15 +461,153 @@ async function analyze() {
   }
 }
 
+// ─── Analyze personal URL ───
+async function analyzePersonalURL(parsed) {
+  // Step 1: Fetch personal profile (if API key available)
+  if (rapidApiKey.value) {
+    try {
+      const profile = await fetchPersonalProfile(parsed.slug)
+      personalProfile.value = profile
+      apiStatus.value.push({ name: 'LinkedIn 个人档案', ok: true })
+
+      // Detect current company from experience
+      if (profile.experiences && profile.experiences.length > 0) {
+        // Find current position (no end date)
+        const current = profile.experiences.find(e => !e.endDate || e.current)
+          || profile.experiences[0]
+        if (current && current.company) {
+          detectedCompany.value = current.company
+          // Auto-analyze the detected company
+          await analyzeCompany(current.company)
+          return
+        }
+      }
+    } catch (err) {
+      console.warn('Profile fetch failed:', err)
+      apiStatus.value.push({ name: 'LinkedIn 个人档案', ok: false })
+    }
+  } else {
+    // No API key: show a helpful message
+    personalProfile.value = {
+      fullName: parsed.displayName,
+      headline: `LinkedIn 个人档案: ${parsed.slug}`,
+      summary: `未配置 RapidAPI Key，无法自动采集档案数据。\n\n如需自动采集，请点击上方「高级设置」输入 RapidAPI Key（免费额度 50次/月）。\n\n你也可以手动输入此人的公司名称，然后点击「分析该公司」。`,
+    }
+  }
+
+  // If we couldn't auto-detect a company, show profile and ask user
+  if (!detectedCompany.value) {
+    // Try to search for the person's company using Clearbit (search by name)
+    try {
+      const q = parsed.displayName
+      const res = await fetch(`${CLEARBIT_SUGGEST}?query=${encodeURIComponent(q)}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data && data.length > 0) {
+          // Show suggestions for the person's company
+          suggestedCompanies.value = data.slice(0, 6)
+        }
+      }
+    } catch {}
+  }
+}
+
+// ─── Analyze company (core logic) ───
+async function analyzeCompany(name) {
+  const q = name.trim()
+  if (!q) return
+
+  const [clearbitResult, remotiveResult] = await Promise.allSettled([
+    fetchCompanyProfile(q),
+    fetchJobsFromRemotive(q),
+  ])
+
+  // Process Clearbit
+  if (clearbitResult.status === 'fulfilled' && clearbitResult.value) {
+    companyProfile.value = clearbitResult.value.profile
+    if (!personalProfile.value) {
+      suggestedCompanies.value = clearbitResult.value.suggestions
+    }
+    apiStatus.value.push({ name: 'Clearbit 公司信息', ok: true })
+  } else {
+    apiStatus.value.push({ name: 'Clearbit 公司信息', ok: false })
+  }
+
+  // Process Remotive
+  if (remotiveResult.status === 'fulfilled') {
+    matchedJobs.value = remotiveResult.value
+    if (matchedJobs.value.length > 0) {
+      apiStatus.value.push({ name: 'Remotive 远程职位', ok: true })
+    } else {
+      apiStatus.value.push({ name: 'Remotive 远程职位', ok: false })
+    }
+  } else {
+    apiStatus.value.push({ name: 'Remotive 远程职位', ok: false })
+  }
+}
+
+// ─── Fetch personal profile via RapidAPI ───
+async function fetchPersonalProfile(username) {
+  const res = await fetch(`${RAPIDAPI_ENDPOINT}?username=${encodeURIComponent(username)}`, {
+    method: 'GET',
+    headers: {
+      'X-RapidAPI-Key': rapidApiKey.value,
+      'X-RapidAPI-Host': RAPIDAPI_HOST,
+    },
+  })
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '')
+    throw new Error(`RapidAPI ${res.status}: ${errText.slice(0, 200)}`)
+  }
+  const data = await res.json()
+  return normalizeProfileData(data)
+}
+
+// ─── Normalize RapidAPI response ───
+function normalizeProfileData(data) {
+  // The API may return data in different shapes; normalize to a consistent format
+  const profile = data.profile || data.data || data
+  return {
+    fullName: profile.fullName || profile.full_name || profile.name || 'Unknown',
+    headline: profile.headline || profile.title || '',
+    location: profile.location || profile.geo || '',
+    summary: profile.summary || profile.about || profile.bio || '',
+    profilePicture: profile.profilePicture || profile.avatar || profile.photo || '',
+    publicProfileUrl: profile.publicProfileUrl || profile.url || '',
+    followers: profile.followers || profile.followerCount || 0,
+    connections: profile.connections || profile.connectionCount || 0,
+    experiences: normalizeExperiences(profile.experiences || profile.experience || []),
+    education: profile.education || [],
+    skills: normalizeSkills(profile.skills || []),
+  }
+}
+
+function normalizeExperiences(exp) {
+  if (!Array.isArray(exp)) return []
+  return exp.map(e => ({
+    title: e.title || e.role || e.position || '',
+    company: e.company || e.companyName || '',
+    duration: e.duration || e.date || '',
+    description: e.description || e.summary || '',
+    current: e.current || e.isCurrent || false,
+  }))
+}
+
+function normalizeSkills(skills) {
+  if (!Array.isArray(skills)) return []
+  return skills.map(s => ({
+    name: typeof s === 'string' ? s : (s.name || s.skill || ''),
+    endorsements: s.endorsements || s.count || 0,
+  })).filter(s => s.name)
+}
+
 // ─── Clearbit: Company profile + suggestions ───
 async function fetchCompanyProfile(name) {
   const res = await fetch(`${CLEARBIT_SUGGEST}?query=${encodeURIComponent(name)}`)
   if (!res.ok) throw new Error(`Clearbit API ${res.status}`)
   const data = await res.json()
-
   if (!data || !data.length) return null
 
-  // First result is the best match
   const best = data[0]
   const profile = {
     name: best.name,
@@ -334,21 +615,17 @@ async function fetchCompanyProfile(name) {
     logo: best.logo || `https://logo.clearbit.com/${best.domain}`,
     linkedin: best.linkedin
       ? (best.linkedin.startsWith('http') ? best.linkedin : `https://www.linkedin.com${best.linkedin}`)
-      : `https://www.linkedin.com/company/${best.domain.split('.')[0]}/`,
+      : best.domain ? `https://www.linkedin.com/company/${best.domain.split('.')[0]}/` : '',
     description: best.description || `官网: ${best.domain}`,
   }
 
-  // Remaining suggestions
   const suggestions = data.slice(1, 8).filter(Boolean)
-
   return { profile, suggestions }
 }
 
 // ─── Remotive: Remote jobs ───
 async function fetchJobsFromRemotive(name) {
   const q = name.toLowerCase()
-
-  // Try multiple search strategies
   const strategies = [
     { search: name, limit: 100 },
     { search: `${name} remote`, limit: 100 },
@@ -361,7 +638,6 @@ async function fetchJobsFromRemotive(name) {
     try {
       const url = new URL(REMOTIVE_API)
       Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v))
-
       const res = await fetch(url.toString())
       if (!res.ok) continue
       const data = await res.json()
@@ -370,18 +646,14 @@ async function fetchJobsFromRemotive(name) {
           || j.title?.toLowerCase().includes(q)
         return match
       })
-
       for (const job of jobs) {
         if (!seen.has(job.id)) {
           seen.add(job.id)
           allJobs.push(job)
         }
       }
-    } catch {
-      continue
-    }
+    } catch { continue }
   }
-
   return allJobs
 }
 
@@ -398,8 +670,7 @@ const topSkills = computed(() => {
   const maxCount = Math.max(...Object.values(freq), 1)
   return Object.entries(freq)
     .map(([name, count], i) => ({
-      name,
-      count,
+      name, count,
       ratio: count / maxCount,
       pct: Math.round(count / maxCount * 100),
       rank: i,
@@ -426,6 +697,7 @@ const dataSource = computed(() => {
   const sources = []
   if (matchedJobs.value.length) sources.push('Remotive')
   if (companyProfile.value) sources.push('Clearbit')
+  if (personalProfile.value) sources.push('LinkedIn 档案')
   return sources.join(' + ') || '无'
 })
 
@@ -486,13 +758,20 @@ const filteredJobs = computed(() => {
 // ─── Insights engine ───
 const insights = computed(() => {
   const items = []
-  if (!matchedJobs.value.length && !companyProfile.value) return items
+  if (!matchedJobs.value.length && !companyProfile.value && !personalProfile.value) return items
+
+  if (personalProfile.value) {
+    items.push({
+      icon: '👤',
+      text: `正在分析 ${personalProfile.value.fullName} 的档案数据。${detectedCompany.value ? `已自动识别其所在公司「${detectedCompany.value}」并进行分析。` : '请手动输入此人的公司名称以获取竞品分析。'}`
+    })
+  }
 
   const top3 = topSkills.value.slice(0, 3).map(t => t.name)
   if (top3.length) {
     items.push({
       icon: '🎯',
-      text: `该公司最核心的技能需求是：${top3.join('、')}。在你的 LinkedIn 资料中突出这些关键词能显著提升匹配度。`
+      text: `该公司最核心的技能需求是：${top3.join('、')}。在开发信中突出这些关键词能显著提升回复率。`
     })
   }
 
@@ -500,62 +779,45 @@ const insights = computed(() => {
   if (fullTime) {
     items.push({
       icon: '🏠',
-      text: `在 ${matchedJobs.value.length} 个远程职位中，全职占 ${fullTime.pct}%，说明该公司有稳定的远程人才招聘策略。`
+      text: `在 ${matchedJobs.value.length} 个职位中，全职占 ${fullTime.pct}%，说明该公司有稳定的招聘策略。`
     })
   }
 
   const techCount = techSkills.value.length
   const softCount = softSkills.value.length
-  if (techCount > softCount) {
+  if (techCount > 0) {
     items.push({
       icon: '💻',
-      text: `技术技能标签 (${techCount}) 远多于软技能 (${softCount})，建议简历中量化展示技术项目成果。`
-    })
-  } else if (softCount > 0) {
-    items.push({
-      icon: '🤝',
-      text: `软技能标签 (${softCount}) 占比较高，说明该公司重视综合素质，建议在资料中突出跨部门协作和沟通能力。`
+      text: `技术技能标签 (${techCount})，` + (softCount > 0 ? `软技能标签 (${softCount})。` : `建议补充软技能关键词以扩大人才池。`)
     })
   }
 
   if (jobsWithSalary.value === 0 && matchedJobs.value.length > 0) {
-    items.push({
-      icon: '💰',
-      text: '所有职位均未公开薪资信息，这通常意味着薪资范围较灵活或有谈判空间。'
-    })
+    items.push({ icon: '💰', text: '所有职位均未公开薪资信息，薪资范围可能较灵活。' })
   } else if (jobsWithSalary.value > 0) {
-    items.push({
-      icon: '💰',
-      text: `${jobsWithSalary.value} 个职位公开了薪资信息，建议参考这些范围来优化你的薪资期望表述。`
-    })
+    items.push({ icon: '💰', text: `${jobsWithSalary.value} 个职位公开了薪资信息，建议参考这些范围优化沟通策略。` })
   }
 
-  if (categoryStats.value.length > 3) {
+  if (categoryStats.value.length > 2) {
     const topCats = categoryStats.value.slice(0, 3).map(c => `${c.name}(${c.count})`).join('、')
-    items.push({
-      icon: '📊',
-      text: `主要招聘类别：${topCats}，说明该公司正在这些方向扩大团队。`
-    })
+    items.push({ icon: '📊', text: `主要招聘方向：${topCats}。` })
   }
 
   if (companyProfile.value?.domain) {
-    items.push({
-      icon: '🔗',
-      text: `该公司官网为 ${companyProfile.value.domain}，建议先了解其产品和服务再进行接触，有针对性的开发信效果更好。`
-    })
+    items.push({ icon: '🔗', text: `公司官网 ${companyProfile.value.domain}，建议先了解其产品再进行接触。` })
   }
 
-  if (suggestedCompanies.value.length > 0) {
+  if (suggestedCompanies.value.length > 0 && !personalProfile.value) {
     items.push({
       icon: '🔄',
-      text: `还发现了 ${suggestedCompanies.value.length} 个相关公司（如 ${suggestedCompanies.value.slice(0, 3).map(c => c.name).join('、')}），可以逐一分析，扩展竞品地图。`
+      text: `还发现 ${suggestedCompanies.value.length} 个相关公司，可逐一分析扩展竞品地图。`
     })
   }
 
-  if (matchedJobs.value.length === 0 && companyProfile.value) {
+  if (matchedJobs.value.length === 0 && companyProfile.value && !personalProfile.value) {
     items.push({
       icon: '🔍',
-      text: '未找到该公司在 Remotive 远程职位数据库中的记录。该公司可能不招远程职位，但仍然是有价值的潜在客户。建议访问其 LinkedIn 主页了解公司动态。'
+      text: '未找到该公司在远程职位数据库中的记录，但仍是有价值的潜在客户。建议访问其 LinkedIn 主页了解动态。'
     })
   }
 
@@ -565,36 +827,29 @@ const insights = computed(() => {
 // ─── Export ───
 function exportReport() {
   const lines = [
-    `# 竞品分析报告: ${company.value}`,
+    `# 竞品 / 同行分析报告`,
     `生成时间: ${new Date().toLocaleString('zh-CN')}`,
     '',
-    '## 公司概览',
-    companyProfile.value
-      ? `- 名称: ${companyProfile.value.name}\n- 域名: ${companyProfile.value.domain}\n- LinkedIn: ${companyProfile.value.linkedin}`
-      : '- 未找到公司信息',
-    '',
-    '## 数据总览',
-    `- 匹配职位: ${matchedJobs.value.length}`,
-    `- 职位标题数: ${uniqueTitles.value}`,
-    `- 技能标签数: ${topSkills.value.length}`,
-    '',
-    '## TOP 10 技能关键词',
-    ...topSkills.value.slice(0, 10).map((t, i) => `${i + 1}. ${t.name} (${t.count})`),
-    '',
-    '## 策略建议',
-    ...insights.value.map(ins => `- ${ins.text}`),
-    '',
-    '## 职位列表',
-    ...matchedJobs.value.map(j =>
-      `- [${j.title}](${j.url}) | ${j.company_name || ''} | ${j.salary || 'N/A'} | ${j.job_type || 'N/A'}`
-    ),
   ]
+
+  if (personalProfile.value) {
+    lines.push('## 个人档案', `- 姓名: ${personalProfile.value.fullName}`, `- 职位: ${personalProfile.value.headline}`, `- LinkedIn: ${personalProfile.value.publicProfileUrl || 'N/A'}`, '')
+  }
+  if (companyProfile.value) {
+    lines.push('## 公司概览', `- 名称: ${companyProfile.value.name}`, `- 域名: ${companyProfile.value.domain}`, `- LinkedIn: ${companyProfile.value.linkedin || 'N/A'}`, '')
+  }
+  lines.push('## 数据总览', `- 匹配职位: ${matchedJobs.value.length}`, `- 职位标题数: ${uniqueTitles.value}`, `- 技能标签数: ${topSkills.value.length}`, '')
+  lines.push('## TOP 10 技能关键词', ...topSkills.value.slice(0, 10).map((t, i) => `${i + 1}. ${t.name} (${t.count})`), '')
+  lines.push('## 策略建议', ...insights.value.map(ins => `- ${ins.text}`), '')
+  lines.push('## 职位列表', ...matchedJobs.value.map(j =>
+    `- [${j.title}](${j.url}) | ${j.company_name || ''} | ${j.salary || 'N/A'} | ${j.job_type || 'N/A'}`
+  ))
 
   const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `竞品分析_${company.value}_${new Date().toISOString().slice(0, 10)}.md`
+  a.download = `竞品分析_${rawInput.value.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_').slice(0, 30)}_${new Date().toISOString().slice(0, 10)}.md`
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -608,11 +863,8 @@ function formatDate(d) {
 function formatJobType(t) {
   if (!t) return '未知'
   const map = {
-    full_time: '全职',
-    part_time: '兼职',
-    contract: '合同工',
-    freelance: '自由职业',
-    internship: '实习',
+    full_time: '全职', part_time: '兼职',
+    contract: '合同工', freelance: '自由职业', internship: '实习',
   }
   return map[t.toLowerCase()] || t
 }
@@ -711,5 +963,22 @@ async function copyWord(w) {
 }
 .job-item:last-child {
   border-bottom: none;
+}
+
+.suggest-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  margin: 3px;
+  font-size: 12px;
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.suggest-badge:hover {
+  background: var(--blue);
+  color: white;
+  border-color: var(--blue);
 }
 </style>
