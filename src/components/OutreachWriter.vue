@@ -144,7 +144,8 @@ const industry = ref('')
 const targetRole = ref('')
 const stylePref = ref('balanced')
 const apiEndpoint = ref('')
-const apiKey = ref('')
+const DEFAULT_API_KEY = 'AIzaSyDAkcIottj1mpjZvgp3XOi2jzlR29G4OeA'
+const apiKey = ref(DEFAULT_API_KEY)
 const apiStatus = ref(null)
 const generating = ref(false)
 const messages = ref([])
@@ -153,18 +154,18 @@ const apiMode = ref('free') // 'free', 'custom', 'mock'
 
 // 从 localStorage 恢复 API Key 和模式
 onMounted(() => {
-  const savedKey = localStorage.getItem('lk_toolkit_gemini_key')
-  if (savedKey) {
-    apiKey.value = savedKey
-    apiMode.value = 'free'
+  const savedMode = localStorage.getItem('lk_toolkit_api_mode')
+  if (savedMode) {
+    apiMode.value = savedMode
   }
   const savedEndpoint = localStorage.getItem('lk_toolkit_api_endpoint')
   if (savedEndpoint) {
     apiEndpoint.value = savedEndpoint
   }
-  const savedMode = localStorage.getItem('lk_toolkit_api_mode')
-  if (savedMode) {
-    apiMode.value = savedMode
+  // 用户手动填过 key 则优先用用户的
+  const savedKey = localStorage.getItem('lk_toolkit_gemini_key')
+  if (savedKey) {
+    apiKey.value = savedKey
   }
 })
 
