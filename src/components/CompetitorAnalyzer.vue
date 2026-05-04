@@ -94,19 +94,22 @@
         </div>
 
         <!-- Manual company input (free mode) -->
-        <div v-if="showManualInput" style="margin-top:14px;padding:12px;background:#fefce8;border-radius:8px;border:1px solid #fde68a">
-          <div style="font-size:13px;font-weight:500;color:#92400e;margin-bottom:8px">🏢 请输入此人的公司名称（用于竞品分析）</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <input v-model="manualCompany" placeholder="输入公司名称，如 Stripe"
-              style="flex:1;min-width:160px;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px" />
-            <button class="btn btn-primary" style="padding:6px 14px;font-size:12px"
-              :disabled="!manualCompany.trim()" @click="submitManualCompany()">确认分析</button>
+        <div v-if="showManualInput" style="margin-top:16px;padding:16px;background:linear-gradient(135deg,#fefce8 0%,#fef9c3 100%);border-radius:12px;border:2px solid #f59e0b;box-shadow:0 2px 8px rgba(245,158,11,0.15)">
+          <div style="font-size:14px;font-weight:600;color:#92400e;margin-bottom:10px">🏢 请输入公司名称以查看竞品分析</div>
+          <p style="font-size:12px;color:#b45309;margin:0 0 12px 0">输入此人所在公司，即可查看该公司的远程职位、技能需求、竞品数据</p>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <input v-model="manualCompany" placeholder="请输入公司名称，如 Stripe、Tencent、Alibaba"
+              style="flex:1;min-width:200px;padding:10px 14px;border:2px solid #fbbf24;border-radius:8px;font-size:14px;outline:none;transition:border-color 0.2s"
+              @keyup.enter="submitManualCompany()" />
+            <button class="btn btn-primary" style="padding:10px 20px;font-size:13px;font-weight:500"
+              :disabled="!manualCompany.trim()" @click="submitManualCompany()">🔍 开始分析</button>
           </div>
-          <div v-if="suggestedCompanies.length" style="margin-top:8px">
-            <div style="font-size:11px;color:#92400e;margin-bottom:4px">💡 或者点击匹配的公司：</div>
-            <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <div v-if="suggestedCompanies.length" style="margin-top:12px">
+            <div style="font-size:11px;color:#92400e;margin-bottom:6px">💡 或者点击匹配的公司（基于姓名推测）：</div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px">
               <button v-for="c in suggestedCompanies" :key="c.name || c.domain"
-                class="btn" style="padding:4px 10px;font-size:11px;background:#fff;border:1px solid #f59e0b;color:#92400e"
+                class="btn"
+                style="padding:6px 12px;font-size:12px;background:#fff;border:1px solid #f59e0b;color:#92400e;border-radius:6px;cursor:pointer"
                 @click="manualCompany=c.name; submitManualCompany()">
                 {{ c.name }}
               </button>
@@ -373,24 +376,28 @@ function onInputChange() {
 // ─── URL Parsing ───
 function parseLinkedInURL(url) {
   try {
-    // Decode URL-encoded characters (Chinese, etc.)
-    const decoded = decodeURIComponent(url)
-    const parsed = new URL(decoded)
+    // Use URL constructor directly (it handles encoded URLs correctly)
+    const parsed = new URL(url)
     if (!parsed.hostname.includes('linkedin.com')) return null
 
     const parts = parsed.pathname.split('/').filter(Boolean)
     // linkedin.com/in/username
     if (parts[0] === 'in' && parts[1]) {
-      const slug = parts[1]
-      // Build a display name: keep Chinese chars, clean trailing IDs
-      const nameParts = slug.split('-').filter(p => !/^\d+$/.test(p) && p.length > 0)
-      const displayName = nameParts.join(' ')
+      const slug = parts[1]  // keep encoded slug for API use
+      // Build display name by decoding the slug first
+      const decodedSlug = decodeURIComponent(slug)
+      const nameParts = decodedSlug.split('-').filter(p => p.length > 0)
+      // Remove trailing LinkedIn ID (all digits, or alphanumeric ID like "a3158112a")
+      const displayName = nameParts.filter((p, i) => {
+        if (i === nameParts.length - 1 && /^[a-z]+\d+[a-z]+$/.test(p)) return false
+        if (/^\d+$/.test(p)) return false
+        return true
+      }).join(' ')
       return { type: 'personal', slug, displayName }
     }
     // linkedin.com/company/company-name
     if (parts[0] === 'company' && parts[1]) {
-      // Convert company-name to display name
-      const name = parts[1].replace(/-/g, ' ')
+      const name = decodeURIComponent(parts[1]).replace(/-/g, ' ')
       return { type: 'company', name }
     }
   } catch {}
@@ -567,12 +574,22 @@ async function fetchPersonalProfile(username) {
     }
   }
 
-  // Free fallback: return a structure that triggers manual input mode in the UI
+  // Free fallback: decode username for display, trigger manual input UI
+  let displayName = username
+  try { displayName = decodeURIComponent(username) } catch {}
+  // Clean up: remove trailing LinkedIn ID (e.g. "a3158112a")
+  const nameParts = displayName.split('-').filter(p => p.length > 0)
+  const cleanName = nameParts.filter((p, i) => {
+    if (i === nameParts.length - 1 && /^[a-z]+\d+[a-z]+$/i.test(p)) return false
+    if (/^\d+$/.test(p)) return false
+    return true
+  }).join(' ')
+
   return {
-    fullName: username.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+    fullName: cleanName || displayName.replace(/-/g, ' '),
     headline: '',
     location: '',
-    summary: '',
+    summary: '💡 当前为免费模式，显示基础档案信息。输入公司名称可查看完整竞品分析。',
     profilePicture: '',
     publicProfileUrl: `https://www.linkedin.com/in/${username}/`,
     followers: 0,
@@ -580,7 +597,7 @@ async function fetchPersonalProfile(username) {
     experiences: [],
     education: [],
     skills: [],
-    _needsManualInput: true, // UI will show manual input form
+    _needsManualInput: true,
   }
 }
 
