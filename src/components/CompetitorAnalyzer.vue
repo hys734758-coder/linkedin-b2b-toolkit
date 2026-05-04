@@ -24,24 +24,6 @@
         </div>
       </div>
 
-      <!-- API Key Settings -->
-      <div style="margin-top:12px">
-        <div style="cursor:pointer;font-size:12px;color:var(--blue)" @click="showSettings=!showSettings">
-          {{ showSettings ? '收起设置 ▲' : '高级设置（可选）▼' }}
-        </div>
-        <div v-if="showSettings" style="margin-top:8px;padding:10px;background:var(--gray-50);border-radius:8px">
-          <div style="font-size:12px;color:var(--gray-600);margin-bottom:6px">
-            RapidAPI Key（可选）：用于采集 LinkedIn 个人档案数据，
-            <a href="https://rapidapi.com/hanzzok12/api/fresh-linkedin-scraper-api" target="_blank" rel="noopener" style="color:var(--blue)">免费获取（50次/月）</a>
-          </div>
-          <input type="password" v-model="rapidApiKey" placeholder="输入 RapidAPI Key..."
-            style="width:100%;max-width:400px;padding:6px 10px;border:1px solid var(--gray-200);border-radius:6px;font-size:12px" />
-          <div v-if="rapidApiKey" style="margin-top:4px;font-size:11px;color:var(--gray-500)">
-            ✅ Key 已保存至浏览器本地（清除浏览数据后会失效）
-          </div>
-        </div>
-      </div>
-
       <div style="margin-top:10px">
         <span v-for="s in sampleCompanies" :key="s" class="suggest-badge"
           @click="rawInput=s;onInputChange();analyze()">{{ s }}</span>
@@ -319,7 +301,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 
 // ─── State ───
 const rawInput = ref('')
@@ -332,9 +314,8 @@ const apiStatus = ref([])
 const jobSearch = ref('')
 const personalProfile = ref(null)
 const detectedCompany = ref('')
-const showSettings = ref(false)
-const rapidApiKey = ref('')
 const inputHint = ref(null)
+const WORKER_ENDPOINT = '' // <- 部署 Cloudflare Worker 后，填入 Worker URL（例如 https://xxx.workers.dev）
 const validInput = computed(() => {
   const v = rawInput.value.trim()
   return v.length > 0 && inputHint.value?.type !== 'invalid'
@@ -342,15 +323,6 @@ const validInput = computed(() => {
 
 const sampleCompanies = ['Stripe', 'Notion', 'Vercel', 'Shopify', 'GitLab', 'Deel', 'Webflow', 'OpenAI']
 
-// ─── Load / Save RapidAPI Key ───
-onMounted(() => {
-  const saved = localStorage.getItem('lk_rapidapi_key')
-  if (saved) rapidApiKey.value = saved
-})
-watch(rapidApiKey, (v) => {
-  if (v) localStorage.setItem('lk_rapidapi_key', v)
-  else localStorage.removeItem('lk_rapidapi_key', v)
-})
 
 // ─── Input change detection ───
 function onInputChange() {
@@ -421,8 +393,6 @@ const TECH_KEYWORDS = new Set([
 // ─── API Endpoints ───
 const CLEARBIT_SUGGEST = 'https://autocomplete.clearbit.com/v1/companies/suggest'
 const REMOTIVE_API = 'https://remotive.com/api/remote-jobs'
-const RAPIDAPI_HOST = 'fresh-linkedin-scraper-api.p.rapidapi.com'
-const RAPIDAPI_ENDPOINT = `https://${RAPIDAPI_HOST}/api/v1/user/profile`
 
 // ─── Main Analysis ───
 async function analyze() {
@@ -463,8 +433,15 @@ async function analyze() {
 
 // ─── Analyze personal URL ───
 async function analyzePersonalURL(parsed) {
-  // Step 1: Fetch personal profile (if API key available)
-  if (rapidApiKey.value) {
+  // Step 1: Fetch personal profile via Cloudflare Worker (no API key needed from user)
+  if (!WORKER_ENDPOINT) {
+    personalProfile.value = {
+      fullName: parsed.displayName,
+      headline: `LinkedIn 个人档案: ${parsed.slug}`,
+      summary: `⚠️ 未配置 Cloudflare Worker 端点。\n\n请部署 Worker 并在代码中填入 WORKER_ENDPOINT。\n详见项目目录 cloudflare-workers/linkedin-proxy/README.md`,
+    }
+    apiStatus.value.push({ name: 'LinkedIn 个人档案', ok: false })
+  } else {
     try {
       const profile = await fetchPersonalProfile(parsed.slug)
       personalProfile.value = profile
@@ -472,12 +449,10 @@ async function analyzePersonalURL(parsed) {
 
       // Detect current company from experience
       if (profile.experiences && profile.experiences.length > 0) {
-        // Find current position (no end date)
         const current = profile.experiences.find(e => !e.endDate || e.current)
           || profile.experiences[0]
         if (current && current.company) {
           detectedCompany.value = current.company
-          // Auto-analyze the detected company
           await analyzeCompany(current.company)
           return
         }
@@ -485,13 +460,6 @@ async function analyzePersonalURL(parsed) {
     } catch (err) {
       console.warn('Profile fetch failed:', err)
       apiStatus.value.push({ name: 'LinkedIn 个人档案', ok: false })
-    }
-  } else {
-    // No API key: show a helpful message
-    personalProfile.value = {
-      fullName: parsed.displayName,
-      headline: `LinkedIn 个人档案: ${parsed.slug}`,
-      summary: `未配置 RapidAPI Key，无法自动采集档案数据。\n\n如需自动采集，请点击上方「高级设置」输入 RapidAPI Key（免费额度 50次/月）。\n\n你也可以手动输入此人的公司名称，然后点击「分析该公司」。`,
     }
   }
 
@@ -546,18 +514,16 @@ async function analyzeCompany(name) {
   }
 }
 
-// ─── Fetch personal profile via RapidAPI ───
+// ─── Fetch personal profile via Cloudflare Worker ───
 async function fetchPersonalProfile(username) {
-  const res = await fetch(`${RAPIDAPI_ENDPOINT}?username=${encodeURIComponent(username)}`, {
-    method: 'GET',
-    headers: {
-      'X-RapidAPI-Key': rapidApiKey.value,
-      'X-RapidAPI-Host': RAPIDAPI_HOST,
-    },
-  })
+  if (!WORKER_ENDPOINT) {
+    throw new Error('WORKER_ENDPOINT 未配置，请部署 Cloudflare Worker 并填入 URL')
+  }
+  const url = `${WORKER_ENDPOINT}?username=${encodeURIComponent(username)}`
+  const res = await fetch(url)
   if (!res.ok) {
     const errText = await res.text().catch(() => '')
-    throw new Error(`RapidAPI ${res.status}: ${errText.slice(0, 200)}`)
+    throw new Error(`Worker ${res.status}: ${errText.slice(0, 200)}`)
   }
   const data = await res.json()
   return normalizeProfileData(data)
