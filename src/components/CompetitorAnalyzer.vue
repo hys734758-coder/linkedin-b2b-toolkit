@@ -92,6 +92,27 @@
               @click="analyzeCompany(detectedCompany)">分析该公司</button>
           </div>
         </div>
+
+        <!-- Manual company input (free mode) -->
+        <div v-if="showManualInput" style="margin-top:14px;padding:12px;background:#fefce8;border-radius:8px;border:1px solid #fde68a">
+          <div style="font-size:13px;font-weight:500;color:#92400e;margin-bottom:8px">🏢 请输入此人的公司名称（用于竞品分析）</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <input v-model="manualCompany" placeholder="输入公司名称，如 Stripe"
+              style="flex:1;min-width:160px;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px" />
+            <button class="btn btn-primary" style="padding:6px 14px;font-size:12px"
+              :disabled="!manualCompany.trim()" @click="submitManualCompany()">确认分析</button>
+          </div>
+          <div v-if="suggestedCompanies.length" style="margin-top:8px">
+            <div style="font-size:11px;color:#92400e;margin-bottom:4px">💡 或者点击匹配的公司：</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">
+              <button v-for="c in suggestedCompanies" :key="c.name || c.domain"
+                class="btn" style="padding:4px 10px;font-size:11px;background:#fff;border:1px solid #f59e0b;color:#92400e"
+                @click="manualCompany=c.name; submitManualCompany()">
+                {{ c.name }}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Company Profile Card -->
@@ -315,7 +336,11 @@ const jobSearch = ref('')
 const personalProfile = ref(null)
 const detectedCompany = ref('')
 const inputHint = ref(null)
+const showManualInput = ref(false)
+const manualCompany = ref('')
 const WORKER_ENDPOINT = '' // <- 部署 Cloudflare Worker 后，填入 Worker URL（例如 https://xxx.workers.dev）
+// 免费替代方案：Clearbit Autocomplete API（无需 Key）+ 本地模拟数据降级
+const USE_FREE_MODE = true // 设为 false 则走 Worker（需要部署 Cloudflare Worker）
 const validInput = computed(() => {
   const v = rawInput.value.trim()
   return v.length > 0 && inputHint.value?.type !== 'invalid'
@@ -431,53 +456,65 @@ async function analyze() {
   }
 }
 
-// ─── Analyze personal URL ───
+// ─── Analyze personal URL (free mode) ───
 async function analyzePersonalURL(parsed) {
-  // Step 1: Fetch personal profile via Cloudflare Worker (no API key needed from user)
-  if (!WORKER_ENDPOINT) {
-    personalProfile.value = {
-      fullName: parsed.displayName,
-      headline: `LinkedIn 个人档案: ${parsed.slug}`,
-      summary: `⚠️ 未配置 Cloudflare Worker 端点。\n\n请部署 Worker 并在代码中填入 WORKER_ENDPOINT。\n详见项目目录 cloudflare-workers/linkedin-proxy/README.md`,
-    }
-    apiStatus.value.push({ name: 'LinkedIn 个人档案', ok: false })
-  } else {
-    try {
-      const profile = await fetchPersonalProfile(parsed.slug)
-      personalProfile.value = profile
-      apiStatus.value.push({ name: 'LinkedIn 个人档案', ok: true })
+  try {
+    const profile = await fetchPersonalProfile(parsed.slug)
+    personalProfile.value = profile
+    apiStatus.value.push({ name: 'LinkedIn 个人档案', ok: true })
 
-      // Detect current company from experience
-      if (profile.experiences && profile.experiences.length > 0) {
-        const current = profile.experiences.find(e => !e.endDate || e.current)
-          || profile.experiences[0]
-        if (current && current.company) {
-          detectedCompany.value = current.company
-          await analyzeCompany(current.company)
-          return
+    // Free mode: need manual company input
+    if (profile._needsManualInput) {
+      showManualInput.value = true
+      try {
+        const res = await fetch(`${CLEARBIT_SUGGEST}?query=${encodeURIComponent(profile.fullName)}`)
+        if (res.ok) {
+          const data = await res.json()
+          if (data && data.length > 0) {
+            suggestedCompanies.value = data.slice(0, 6)
+          }
         }
-      }
-    } catch (err) {
-      console.warn('Profile fetch failed:', err)
-      apiStatus.value.push({ name: 'LinkedIn 个人档案', ok: false })
+      } catch {}
+      return
     }
+
+    // Try to detect current company from experience
+    if (profile.experiences && profile.experiences.length > 0) {
+      const current = profile.experiences.find(e => !e.endDate || e.current)
+        || profile.experiences[0]
+      if (current && current.company) {
+        detectedCompany.value = current.company
+        await analyzeCompany(current.company)
+        return
+      }
+    }
+  } catch (err) {
+    console.warn('Profile fetch failed:', err)
+    apiStatus.value.push({ name: 'LinkedIn 个人档案', ok: false })
   }
 
-  // If we couldn't auto-detect a company, show profile and ask user
+  // Fallback: show company suggestions
   if (!detectedCompany.value) {
-    // Try to search for the person's company using Clearbit (search by name)
     try {
       const q = parsed.displayName
       const res = await fetch(`${CLEARBIT_SUGGEST}?query=${encodeURIComponent(q)}`)
       if (res.ok) {
         const data = await res.json()
         if (data && data.length > 0) {
-          // Show suggestions for the person's company
           suggestedCompanies.value = data.slice(0, 6)
         }
       }
     } catch {}
   }
+}
+
+// ─── Submit manual company (free mode) ───
+async function submitManualCompany() {
+  const name = manualCompany.value.trim()
+  if (!name) return
+  showManualInput.value = false
+  detectedCompany.value = name
+  await analyzeCompany(name)
 }
 
 // ─── Analyze company (core logic) ───
@@ -514,19 +551,37 @@ async function analyzeCompany(name) {
   }
 }
 
-// ─── Fetch personal profile via Cloudflare Worker ───
+// ─── Fetch personal profile (Free Mode: manual input / mock data) ───
 async function fetchPersonalProfile(username) {
-  if (!WORKER_ENDPOINT) {
-    throw new Error('WORKER_ENDPOINT 未配置，请部署 Cloudflare Worker 并填入 URL')
+  // Try Cloudflare Worker first (if configured)
+  if (WORKER_ENDPOINT) {
+    try {
+      const url = `${WORKER_ENDPOINT}?username=${encodeURIComponent(username)}`
+      const res = await fetch(url)
+      if (res.ok) {
+        const data = await res.json()
+        return normalizeProfileData(data)
+      }
+    } catch (e) {
+      console.warn('Worker fetch failed, falling back to manual mode:', e.message)
+    }
   }
-  const url = `${WORKER_ENDPOINT}?username=${encodeURIComponent(username)}`
-  const res = await fetch(url)
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '')
-    throw new Error(`Worker ${res.status}: ${errText.slice(0, 200)}`)
+
+  // Free fallback: return a structure that triggers manual input mode in the UI
+  return {
+    fullName: username.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+    headline: '',
+    location: '',
+    summary: '',
+    profilePicture: '',
+    publicProfileUrl: `https://www.linkedin.com/in/${username}/`,
+    followers: 0,
+    connections: 0,
+    experiences: [],
+    education: [],
+    skills: [],
+    _needsManualInput: true, // UI will show manual input form
   }
-  const data = await res.json()
-  return normalizeProfileData(data)
 }
 
 // ─── Normalize RapidAPI response ───
