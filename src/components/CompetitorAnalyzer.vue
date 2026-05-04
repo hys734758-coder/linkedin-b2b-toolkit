@@ -397,7 +397,10 @@ function parseLinkedInURL(url) {
     }
     // linkedin.com/company/company-name
     if (parts[0] === 'company' && parts[1]) {
-      const name = decodeURIComponent(parts[1]).replace(/-/g, ' ')
+      let name = decodeURIComponent(parts[1]).replace(/-/g, ' ')
+      // Clean common Chinese company suffixes for better API matching
+      name = name.replace(/\s*(有限公司|股份有限公司|有限责任公司|集团|控股|科技|技术|网络|信息|咨询|服务|管理|投资|发展|实业|国际|中国|美国|全球)\s*/g, ' ').trim()
+      name = name.replace(/\s+/g, ' ')
       return { type: 'company', name }
     }
   } catch {}
@@ -425,6 +428,126 @@ const TECH_KEYWORDS = new Set([
 // ─── API Endpoints ───
 const CLEARBIT_SUGGEST = 'https://autocomplete.clearbit.com/v1/companies/suggest'
 const REMOTIVE_API = 'https://remotive.com/api/remote-jobs'
+
+// ─── Chinese company name → English name mapping ───
+const CN_COMPANY_MAP = {
+  '微软': 'Microsoft', '微软中国': 'Microsoft', '微软中国有限公司': 'Microsoft',
+  '腾讯': 'Tencent', '腾讯科技': 'Tencent', '深圳市腾讯计算机系统有限公司': 'Tencent',
+  '阿里巴巴': 'Alibaba', '阿里巴巴集团': 'Alibaba', '阿里': 'Alibaba',
+  '百度': 'Baidu', '百度在线': 'Baidu', '北京百度网讯科技有限公司': 'Baidu',
+  '字节跳动': 'ByteDance', '字节': 'ByteDance', '今日头条': 'ByteDance', '抖音': 'ByteDance', 'tiktok': 'ByteDance',
+  '华为': 'Huawei', '华为技术': 'Huawei', '华为技术有限公司': 'Huawei',
+  '京东': 'JD.com', '京东集团': 'JD.com', '北京京东世纪贸易有限公司': 'JD.com',
+  '美团': 'Meituan', '美团点评': 'Meituan', '北京三快科技有限公司': 'Meituan',
+  '拼多多': 'Pinduoduo', '拼多多集团': 'Pinduoduo', '上海寻梦信息技术有限公司': 'Pinduoduo',
+  '网易': 'NetEase', '网易公司': 'NetEase', '杭州网易': 'NetEase',
+  '小米': 'Xiaomi', '小米科技': 'Xiaomi', '北京小米科技有限责任公司': 'Xiaomi',
+  '滴滴': 'DiDi', '滴滴出行': 'DiDi', '北京小桔科技有限公司': 'DiDi',
+  '蚂蚁集团': 'Ant Group', '蚂蚁金服': 'Ant Group', '蚂蚁科技集团': 'Ant Group',
+  '大疆': 'DJI', '大疆创新': 'DJI', '深圳市大疆创新科技有限公司': 'DJI',
+  '比亚迪': 'BYD', '比亚迪股份': 'BYD', '比亚迪股份有限公司': 'BYD',
+  '联想': 'Lenovo', '联想集团': 'Lenovo',
+  '海尔': 'Haier', '海尔集团': 'Haier',
+  '海尔智家': 'Haier Smart Home',
+  '中兴': 'ZTE', '中兴通讯': 'ZTE', '中兴通讯股份有限公司': 'ZTE',
+  '快手': 'Kuaishou', '快手科技': 'Kuaishou', '北京快手科技有限公司': 'Kuaishou',
+  '哔哩哔哩': 'Bilibili', 'b站': 'Bilibili', '上海宽娱': 'Bilibili',
+  '携程': 'Trip.com', '携程旅行': 'Trip.com', '携程集团': 'Trip.com',
+  '智联招聘': 'Zhaopin', '前程无忧': '51job',
+  'oppo': 'OPPO', '欧珀': 'OPPO', '广东欧珀': 'OPPO',
+  'vivo': 'vivo', '维沃': 'vivo', '广东步步高': 'vivo',
+  '商汤': 'SenseTime', '商汤科技': 'SenseTime',
+  '科大讯飞': 'iFlytek', '科大讯飞股份': 'iFlytek',
+  '海康威视': 'Hikvision', '杭州海康威视': 'Hikvision',
+  '大华': 'Dahua', '浙江大华': 'Dahua',
+  '中芯国际': 'SMIC', '中芯国际集成电路': 'SMIC',
+  '格力': 'Gree', '格力电器': 'Gree', '珠海格力': 'Gree',
+  '中国平安': 'Ping An', '平安集团': 'Ping An',
+  '工商银行': 'ICBC', '中国工商银行': 'ICBC',
+  '建设银行': 'CCB', '中国建设银行': 'CCB',
+  '招商银行': 'CMB', '招商银行股份': 'CMB',
+  '中国银行': 'Bank of China', '中国银行股份': 'Bank of China',
+  '中国移动': 'China Mobile', '中国电信': 'China Telecom', '中国联通': 'China Unicom',
+  '国家电网': 'State Grid',
+  '中国石油': 'CNPC', '中国石化': 'Sinopec',
+  '蚂蚁': 'Ant Group', '微众银行': 'WeBank',
+  'Shopee': 'Shopee', '虾皮': 'Shopee',
+  'Lazada': 'Lazada', '来赞达': 'Lazada',
+  'Grab': 'Grab', 'GrabTaxi': 'Grab',
+  'Google': 'Google', '谷歌': 'Google', '谷歌中国': 'Google',
+  'Apple': 'Apple', '苹果': 'Apple', '苹果公司': 'Apple', '苹果中国': 'Apple',
+  'Amazon': 'Amazon', '亚马逊': 'Amazon', '亚马逊中国': 'Amazon',
+  'Meta': 'Meta', 'Facebook': 'Meta', '脸书': 'Meta', '元': 'Meta',
+  'Netflix': 'Netflix', '奈飞': 'Netflix',
+  'Tesla': 'Tesla', '特斯拉': 'Tesla', '特斯拉中国': 'Tesla',
+  'IBM': 'IBM', '国际商业机器': 'IBM',
+  'Intel': 'Intel', '英特尔': 'Intel',
+  'Samsung': 'Samsung', '三星': 'Samsung', '三星电子': 'Samsung',
+  'Sony': 'Sony', '索尼': 'Sony',
+  'Oracle': 'Oracle', '甲骨文': 'Oracle',
+  'SAP': 'SAP', '思爱普': 'SAP',
+  'Adobe': 'Adobe',
+  'Salesforce': 'Salesforce',
+  'Shopify': 'Shopify',
+  'Stripe': 'Stripe',
+  'Spotify': 'Spotify', '声田': 'Spotify',
+  'Airbnb': 'Airbnb', '爱彼迎': 'Airbnb',
+  'Uber': 'Uber', '优步': 'Uber',
+  'LinkedIn': 'LinkedIn', '领英': 'LinkedIn',
+  'Twitter': 'X Corp', '推特': 'X Corp', 'X': 'X Corp',
+  'Zoom': 'Zoom',
+  'Slack': 'Slack',
+  'Notion': 'Notion',
+  'Vercel': 'Vercel',
+  'OpenAI': 'OpenAI',
+  'NVIDIA': 'NVIDIA', '英伟达': 'NVIDIA', '英伟达中国': 'NVIDIA',
+  '阿里云': 'Alibaba Cloud', '华为云': 'Huawei Cloud', '腾讯云': 'Tencent Cloud',
+  '百度云': 'Baidu Cloud', '金山云': 'Kingsoft Cloud',
+  '美团': 'Meituan', '饿了么': 'Ele.me', '飞猪': 'Fliggy',
+  '微信': 'WeChat', '企业微信': 'WeCom', '钉钉': 'DingTalk',
+  '高德': 'Amap', '高德地图': 'Amap',
+  '得物': 'Dewu', '得物App': 'Dewu',
+  'Shein': 'SHEIN', '希音': 'SHEIN',
+  'Temu': 'Temu',
+  'TikTok': 'TikTok',
+  '中国': '',  // generic fallback, empty = skip
+  '有限公司': '',  // suffix, empty = skip
+  '集团': '',  // suffix
+  '科技': '',  // suffix
+  '有限': '',  // suffix
+  '公司': '',  // suffix
+}
+
+// Resolve a Chinese company name to its English equivalent for API queries
+function resolveCompanyQuery(name) {
+  const trimmed = name.trim()
+  if (!trimmed) return { english: trimmed, original: trimmed }
+  
+  // Direct lookup
+  if (CN_COMPANY_MAP[trimmed]) {
+    const en = CN_COMPANY_MAP[trimmed]
+    if (en) return { english: en, original: trimmed }
+  }
+  
+  // Try each segment of the name (handles "微软 中国 有限公司" → "微软" → "Microsoft")
+  const segments = trimmed.split(/[\s\-·]+/).filter(Boolean)
+  for (const seg of segments) {
+    if (CN_COMPANY_MAP[seg] && CN_COMPANY_MAP[seg]) {
+      return { english: CN_COMPANY_MAP[seg], original: trimmed }
+    }
+  }
+  
+  // Check if name already contains English (mixed names)
+  if (/[a-zA-Z]/.test(trimmed)) {
+    // Extract English parts
+    const englishPart = trimmed.replace(/[一-鿿　-〿＀-￯]+/g, '').trim()
+    if (englishPart.length >= 2) {
+      return { english: englishPart, original: trimmed }
+    }
+  }
+  
+  return { english: trimmed, original: trimmed }
+}
 
 // ─── Main Analysis ───
 async function analyze() {
@@ -529,9 +652,14 @@ async function analyzeCompany(name) {
   const q = name.trim()
   if (!q) return
 
+  // Resolve Chinese company name to English for API queries
+  const { english: enName, original: cnName } = resolveCompanyQuery(q)
+  const queryName = enName || q
+  const usedTranslation = enName && enName.toLowerCase() !== q.toLowerCase()
+
   const [clearbitResult, remotiveResult] = await Promise.allSettled([
-    fetchCompanyProfile(q),
-    fetchJobsFromRemotive(q),
+    fetchCompanyProfile(queryName, q),
+    fetchJobsFromRemotive(queryName, q),
   ])
 
   // Process Clearbit
@@ -540,7 +668,7 @@ async function analyzeCompany(name) {
     if (!personalProfile.value) {
       suggestedCompanies.value = clearbitResult.value.suggestions
     }
-    apiStatus.value.push({ name: 'Clearbit 公司信息', ok: true })
+    apiStatus.value.push({ name: usedTranslation ? `Clearbit 公司信息（已翻译: ${q} → ${enName}）` : 'Clearbit 公司信息', ok: true })
   } else {
     apiStatus.value.push({ name: 'Clearbit 公司信息', ok: false })
   }
@@ -549,7 +677,7 @@ async function analyzeCompany(name) {
   if (remotiveResult.status === 'fulfilled') {
     matchedJobs.value = remotiveResult.value
     if (matchedJobs.value.length > 0) {
-      apiStatus.value.push({ name: 'Remotive 远程职位', ok: true })
+      apiStatus.value.push({ name: usedTranslation ? `Remotive 远程职位（搜索: ${enName}）` : 'Remotive 远程职位', ok: true })
     } else {
       apiStatus.value.push({ name: 'Remotive 远程职位', ok: false })
     }
@@ -640,34 +768,49 @@ function normalizeSkills(skills) {
 }
 
 // ─── Clearbit: Company profile + suggestions ───
-async function fetchCompanyProfile(name) {
-  const res = await fetch(`${CLEARBIT_SUGGEST}?query=${encodeURIComponent(name)}`)
-  if (!res.ok) throw new Error(`Clearbit API ${res.status}`)
-  const data = await res.json()
-  if (!data || !data.length) return null
+async function fetchCompanyProfile(enName, originalName) {
+  // Try English name first, then original as fallback
+  const queries = [enName]
+  if (originalName && originalName !== enName) queries.push(originalName)
+  
+  for (const q of queries) {
+    try {
+      const res = await fetch(`${CLEARBIT_SUGGEST}?query=${encodeURIComponent(q)}`)
+      if (!res.ok) continue
+      const data = await res.json()
+      if (!data || !data.length) continue
 
-  const best = data[0]
-  const profile = {
-    name: best.name,
-    domain: best.domain,
-    logo: best.logo || `https://logo.clearbit.com/${best.domain}`,
-    linkedin: best.linkedin
-      ? (best.linkedin.startsWith('http') ? best.linkedin : `https://www.linkedin.com${best.linkedin}`)
-      : best.domain ? `https://www.linkedin.com/company/${best.domain.split('.')[0]}/` : '',
-    description: best.description || `官网: ${best.domain}`,
+      const best = data[0]
+      const profile = {
+        name: best.name,
+        domain: best.domain,
+        logo: best.logo || `https://logo.clearbit.com/${best.domain}`,
+        linkedin: best.linkedin
+          ? (best.linkedin.startsWith('http') ? best.linkedin : `https://www.linkedin.com${best.linkedin}`)
+          : best.domain ? `https://www.linkedin.com/company/${best.domain.split('.')[0]}/` : '',
+        description: best.description || `官网: ${best.domain}`,
+      }
+      const suggestions = data.slice(1, 8).filter(Boolean)
+      return { profile, suggestions }
+    } catch { continue }
   }
-
-  const suggestions = data.slice(1, 8).filter(Boolean)
-  return { profile, suggestions }
+  return null
 }
 
 // ─── Remotive: Remote jobs ───
-async function fetchJobsFromRemotive(name) {
-  const q = name.toLowerCase()
+async function fetchJobsFromRemotive(enName, originalName) {
+  // Use English name for search, original for company_name matching
+  const q = (enName || '').toLowerCase()
+  const original = (originalName || '').toLowerCase()
+  
   const strategies = [
-    { search: name, limit: 100 },
-    { search: `${name} remote`, limit: 100 },
+    { search: enName, limit: 100 },
   ]
+  
+  // Also try searching with company_name filter
+  if (enName && enName.length > 2) {
+    strategies.push({ search: enName, company_name: enName, limit: 100 })
+  }
 
   let allJobs = []
   const seen = new Set()
@@ -680,9 +823,17 @@ async function fetchJobsFromRemotive(name) {
       if (!res.ok) continue
       const data = await res.json()
       const jobs = (data.jobs || []).filter(j => {
-        const match = j.company_name?.toLowerCase().includes(q)
-          || j.title?.toLowerCase().includes(q)
-        return match
+        const companyName = (j.company_name || '').toLowerCase()
+        const title = (j.title || '').toLowerCase()
+        // Match against English name, original name, or partial matches
+        if (q && (companyName.includes(q) || title.includes(q))) return true
+        if (original && original.length > 1 && companyName.includes(original)) return true
+        // Loose match: check if any word of q matches
+        if (q && q.length > 2) {
+          const words = q.split(/[\s\-]+/).filter(w => w.length > 2)
+          if (words.some(w => companyName.includes(w) || title.includes(w))) return true
+        }
+        return false
       })
       for (const job of jobs) {
         if (!seen.has(job.id)) {
