@@ -6,9 +6,18 @@
     <!-- 免费 API 快速设置 -->
     <div class="api-section">
       <div class="api-tabs">
-        <button class="api-tab" :class="{active: apiMode==='free'}" @click="apiMode='free'">🆓 免费 Gemini API（推荐）</button>
+        <button class="api-tab" :class="{active: apiMode==='pollinations'}" @click="apiMode='pollinations'">🤖 免费 AI（开箱即用）</button>
+        <button class="api-tab" :class="{active: apiMode==='free'}" @click="apiMode='free'">🔑 Gemini API</button>
         <button class="api-tab" :class="{active: apiMode==='custom'}" @click="apiMode='custom'">⚙️ 自定义 API</button>
         <button class="api-tab" :class="{active: apiMode==='mock'}" @click="apiMode='mock'">📋 模拟模式</button>
+      </div>
+
+      <!-- Pollinations 免费模式（默认） -->
+      <div v-if="apiMode==='pollinations'" class="api-panel free-panel">
+        <p class="mock-info" style="background:linear-gradient(135deg,#e8f5e9,#f1f8e9)">
+          ✅ 当前使用 <strong>Pollinations.ai</strong> 免费 AI，无需任何 API Key，开箱即用。
+          由 OpenAI 提供模型支持，每天可使用数十次。如需更高速率，可切换到 Gemini API 模式。
+        </p>
       </div>
 
       <!-- 免费模式 -->
@@ -149,7 +158,9 @@ const apiStatus = ref(null)
 const generating = ref(false)
 const messages = ref([])
 const history = ref([])
-const apiMode = ref('free') // 'free', 'custom', 'mock'
+const apiMode = ref('pollinations') // 'pollinations', 'free', 'custom', 'mock'
+
+const POLLINATIONS_URL = 'https://text.pollinations.ai/'
 
 // 从 localStorage 恢复 API Key 和模式
 onMounted(() => {
@@ -266,11 +277,16 @@ const analyzeSpam = (text) => {
   return { score, riskLevel, analysis, flags }
 }
 
-// 调用 AI API（支持 Gemini 和 OpenAI 格式）
+// 调用 AI API（支持 Pollinations / Gemini / OpenAI 格式）
 const callAI = async (prompt) => {
   // 模拟模式
   if (apiMode.value === 'mock') {
     return simulateAI(prompt)
+  }
+
+  // Pollinations 免费模式（无需 API Key）
+  if (apiMode.value === 'pollinations') {
+    return callPollinations(prompt)
   }
 
   // 免费 Gemini 模式
@@ -282,6 +298,17 @@ const callAI = async (prompt) => {
   // 自定义模式
   if (!apiEndpoint.value) return simulateAI(prompt)
   return callOpenAI(prompt)
+}
+
+// Pollinations.ai 免费 AI 调用（无需 API Key）
+const callPollinations = async (prompt) => {
+  const url = POLLINATIONS_URL + encodeURIComponent(prompt) + '?model=openai'
+  const res = await fetch(url)
+  if (!res.ok) {
+    if (res.status === 429) throw new Error('请求过于频繁，请稍等几秒后重试')
+    throw new Error(`Pollinations API 错误 ${res.status}`)
+  }
+  return await res.text()
 }
 
 // Gemini API 调用
@@ -509,6 +536,20 @@ const testAPI = async () => {
 
     if (apiMode.value === 'mock') {
       apiStatus.value = { type: 'info', msg: 'ℹ️ 模拟模式无需测试，直接生成即可（使用内置模板）。' }
+      return
+    }
+
+    if (apiMode.value === 'pollinations') {
+      try {
+        const res = await fetch(POLLINATIONS_URL + encodeURIComponent('Reply with just: OK') + '?model=openai')
+        if (res.ok) {
+          apiStatus.value = { type: 'success', msg: '✅ Pollinations AI 连接成功！无需 API Key，直接生成即可。' }
+        } else {
+          apiStatus.value = { type: 'error', msg: `❌ 连接失败：${res.status}` }
+        }
+      } catch (e) {
+        apiStatus.value = { type: 'error', msg: `❌ 连接失败：${e.message}` }
+      }
       return
     }
 
