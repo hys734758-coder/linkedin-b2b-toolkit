@@ -144,8 +144,7 @@ const industry = ref('')
 const targetRole = ref('')
 const stylePref = ref('balanced')
 const apiEndpoint = ref('')
-const DEFAULT_API_KEY = 'AIzaSyDAkcIottj1mpjZvgp3XOi2jzlR29G4OeA'
-const apiKey = ref(DEFAULT_API_KEY)
+const apiKey = ref('')
 const apiStatus = ref(null)
 const generating = ref(false)
 const messages = ref([])
@@ -154,18 +153,18 @@ const apiMode = ref('free') // 'free', 'custom', 'mock'
 
 // 从 localStorage 恢复 API Key 和模式
 onMounted(() => {
-  const savedMode = localStorage.getItem('lk_toolkit_api_mode')
-  if (savedMode) {
-    apiMode.value = savedMode
+  const savedKey = localStorage.getItem('lk_toolkit_gemini_key')
+  if (savedKey) {
+    apiKey.value = savedKey
+    apiMode.value = 'free'
   }
   const savedEndpoint = localStorage.getItem('lk_toolkit_api_endpoint')
   if (savedEndpoint) {
     apiEndpoint.value = savedEndpoint
   }
-  // 用户手动填过 key 则优先用用户的
-  const savedKey = localStorage.getItem('lk_toolkit_gemini_key')
-  if (savedKey) {
-    apiKey.value = savedKey
+  const savedMode = localStorage.getItem('lk_toolkit_api_mode')
+  if (savedMode) {
+    apiMode.value = savedMode
   }
 })
 
@@ -300,8 +299,13 @@ const callGemini = async (prompt) => {
   })
 
   if (!res.ok) {
-    const err = await res.json()
-    throw new Error(`Gemini API 错误 ${res.status}: ${JSON.stringify(err)}`)
+    const errBody = await res.json().catch(() => ({}))
+    const errMsg = JSON.stringify(errBody)
+    // 友好处理额度耗尽错误
+    if (errMsg.includes('quota') || errMsg.includes('Quota exceeded') || errMsg.includes('exceeded your current quota')) {
+      throw new Error('Gemini API 额度已用完。请更换 API Key，或切换到「模拟模式」查看模板效果。')
+    }
+    throw new Error(`Gemini API 错误 ${res.status}: ${errMsg}`)
   }
 
   const data = await res.json()
