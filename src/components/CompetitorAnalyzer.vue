@@ -151,7 +151,7 @@
         <div class="card-title">数据总览</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px">
           <div class="metric-card">
-            <div class="metric-label">匹配职位</div>
+            <div class="metric-label">职位总数</div>
             <div class="metric-value">{{ matchedJobs.length }}</div>
           </div>
           <div class="metric-card">
@@ -428,6 +428,7 @@ const TECH_KEYWORDS = new Set([
 // ─── API Endpoints ───
 const CLEARBIT_SUGGEST = 'https://autocomplete.clearbit.com/v1/companies/suggest'
 const REMOTIVE_API = 'https://remotive.com/api/remote-jobs'
+const REMOTEOK_API = 'https://remoteok.com/api'
 
 // ─── Chinese company name → English name mapping ───
 const CN_COMPANY_MAP = {
@@ -657,9 +658,10 @@ async function analyzeCompany(name) {
   const queryName = enName || q
   const usedTranslation = enName && enName.toLowerCase() !== q.toLowerCase()
 
-  const [clearbitResult, remotiveResult] = await Promise.allSettled([
+  const [clearbitResult, remotiveResult, remoteokResult] = await Promise.allSettled([
     fetchCompanyProfile(queryName, q),
-    fetchJobsFromRemotive(queryName, q),
+    fetchJobsFromRemotive(),
+    fetchJobsFromRemoteOK(),
   ])
 
   // Process Clearbit
@@ -673,16 +675,77 @@ async function analyzeCompany(name) {
     apiStatus.value.push({ name: 'Clearbit 公司信息', ok: false })
   }
 
-  // Process Remotive
-  if (remotiveResult.status === 'fulfilled') {
-    matchedJobs.value = remotiveResult.value
-    if (matchedJobs.value.length > 0) {
-      apiStatus.value.push({ name: usedTranslation ? `Remotive 远程职位（搜索: ${enName}）` : 'Remotive 远程职位', ok: true })
-    } else {
-      apiStatus.value.push({ name: 'Remotive 远程职位', ok: false })
+  // Merge & filter jobs from all sources
+  let allJobs = []
+  if (remotiveResult.status === 'fulfilled') allJobs.push(...remotiveResult.value)
+  if (remoteokResult.status === 'fulfilled') allJobs.push(...remoteokResult.value)
+
+  // Deduplicate by id
+  const seen = new Set()
+  allJobs = allJobs.filter(j => {
+    if (seen.has(j.id)) return false
+    seen.add(j.id)
+    return true
+  })
+
+  // Smart matching: score each job by relevance
+  const scored = allJobs.map(job => {
+    let score = 0
+    const company = (job.company_name || '').toLowerCase()
+    const title = (job.title || '').toLowerCase()
+    const tags = (job.tags || []).join(' ').toLowerCase()
+    const all = company + ' ' + title + ' ' + tags
+
+    // Exact company name match (highest priority)
+    if (queryName && company === queryName.toLowerCase()) score += 100
+    if (q && company === q.toLowerCase()) score += 100
+
+    // Company contains query
+    if (queryName && company.includes(queryName.toLowerCase())) score += 50
+    if (q && company.includes(q.toLowerCase())) score += 50
+
+    // Any word from query matches company
+    if (queryName) {
+      const words = queryName.toLowerCase().split(/[\s\-]+/).filter(w => w.length > 2)
+      for (const w of words) {
+        if (company.includes(w)) score += 30
+        if (title.includes(w)) score += 15
+        if (tags.includes(w)) score += 10
+      }
     }
+
+    // Original name words (for Chinese)
+    if (q && q !== queryName) {
+      const origWords = q.toLowerCase().split(/[\s\-·]+/).filter(w => w.length > 1)
+      for (const w of origWords) {
+        if (company.includes(w)) score += 20
+        if (title.includes(w)) score += 10
+      }
+    }
+
+    job._relevanceScore = score
+    return job
+  })
+
+  // Sort by relevance, but show all jobs (not just matched ones)
+  const matched = scored.filter(j => j._relevanceScore >= 30).sort((a, b) => b._relevanceScore - a._relevanceScore)
+  const others = scored.filter(j => j._relevanceScore < 30)
+
+  // Use matched jobs if any; otherwise show all jobs as "unfiltered"
+  if (matched.length > 0) {
+    matchedJobs.value = matched
   } else {
-    apiStatus.value.push({ name: 'Remotive 远程职位', ok: false })
+    // No exact match — show all jobs with relevance hint
+    matchedJobs.value = scored.sort((a, b) => b._relevanceScore - a._relevanceScore).slice(0, 50)
+  }
+
+  // API status
+  if (matched.length > 0) {
+    apiStatus.value.push({ name: `职位匹配 (${matched.length} 条精准匹配 / ${allJobs.length} 总职位)`, ok: true })
+  } else if (allJobs.length > 0) {
+    apiStatus.value.push({ name: `职位数据 (${allJobs.length} 条，未找到精确匹配)`, ok: true })
+  } else {
+    apiStatus.value.push({ name: '职位数据', ok: false })
   }
 }
 
@@ -797,53 +860,52 @@ async function fetchCompanyProfile(enName, originalName) {
   return null
 }
 
-// ─── Remotive: Remote jobs ───
-async function fetchJobsFromRemotive(enName, originalName) {
-  // Use English name for search, original for company_name matching
-  const q = (enName || '').toLowerCase()
-  const original = (originalName || '').toLowerCase()
-  
-  const strategies = [
-    { search: enName, limit: 100 },
-  ]
-  
-  // Also try searching with company_name filter
-  if (enName && enName.length > 2) {
-    strategies.push({ search: enName, company_name: enName, limit: 100 })
-  }
+// ─── Remotive: Remote jobs (fetch ALL — server-side search is broken) ───
+async function fetchJobsFromRemotive() {
+  try {
+    const res = await fetch(REMOTIVE_API)
+    if (!res.ok) return []
+    const data = await res.json()
+    return (data.jobs || []).map(j => ({
+      id: `remotive-${j.id}`,
+      title: j.title || '',
+      company_name: j.company_name || '',
+      company_logo: j.company_logo || '',
+      company_logo_url: j.company_logo_url || '',
+      url: j.url || '',
+      salary: j.salary || '',
+      job_type: j.job_type || '',
+      category: j.category || '',
+      tags: j.tags || [],
+      candidate_required_location: j.candidate_required_location || '',
+      publication_date: j.publication_date || '',
+    }))
+  } catch { return [] }
+}
 
-  let allJobs = []
-  const seen = new Set()
-
-  for (const params of strategies) {
-    try {
-      const url = new URL(REMOTIVE_API)
-      Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v))
-      const res = await fetch(url.toString())
-      if (!res.ok) continue
-      const data = await res.json()
-      const jobs = (data.jobs || []).filter(j => {
-        const companyName = (j.company_name || '').toLowerCase()
-        const title = (j.title || '').toLowerCase()
-        // Match against English name, original name, or partial matches
-        if (q && (companyName.includes(q) || title.includes(q))) return true
-        if (original && original.length > 1 && companyName.includes(original)) return true
-        // Loose match: check if any word of q matches
-        if (q && q.length > 2) {
-          const words = q.split(/[\s\-]+/).filter(w => w.length > 2)
-          if (words.some(w => companyName.includes(w) || title.includes(w))) return true
-        }
-        return false
-      })
-      for (const job of jobs) {
-        if (!seen.has(job.id)) {
-          seen.add(job.id)
-          allJobs.push(job)
-        }
-      }
-    } catch { continue }
-  }
-  return allJobs
+// ─── RemoteOK: Remote jobs (large dataset, ~100 jobs) ───
+async function fetchJobsFromRemoteOK() {
+  try {
+    const res = await fetch(REMOTEOK_API)
+    if (!res.ok) return []
+    const data = await res.json()
+    // First item is metadata, skip it
+    if (!Array.isArray(data) || data.length < 2) return []
+    return data.slice(1).map(j => ({
+      id: `remoteok-${j.id}`,
+      title: j.position || '',
+      company_name: j.company || '',
+      company_logo: j.company_logo || '',
+      company_logo_url: j.company_logo || '',
+      url: j.url || j.apply_url || `https://remoteok.com/remote-jobs/${j.slug}`,
+      salary: j.salary || '',
+      job_type: j.type || '',
+      category: j.category || '',
+      tags: j.tags || [],
+      candidate_required_location: j.location || '',
+      publication_date: j.date || '',
+    }))
+  } catch { return [] }
 }
 
 // ─── Computed: Skills ───
@@ -1007,6 +1069,15 @@ const insights = computed(() => {
     items.push({
       icon: '🔍',
       text: '未找到该公司在远程职位数据库中的记录，但仍是有价值的潜在客户。建议访问其 LinkedIn 主页了解动态。'
+    })
+  }
+
+  // Check if we have matched vs total
+  const hasExactMatch = matchedJobs.value.some(j => (j._relevanceScore || 0) >= 50)
+  if (matchedJobs.value.length > 0 && !hasExactMatch) {
+    items.push({
+      icon: '📊',
+      text: '当前显示的职位来自远程工作数据库的最新数据，未找到与该公司精确匹配的职位。你可以浏览这些职位了解市场趋势。'
     })
   }
 
