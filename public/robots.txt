@@ -1,3 +1,0 @@
-User-agent: *
-Allow: /
-Sitemap: https://iguoxing.github.io/linkedin-b2b-toolkit/sitemap.xml
